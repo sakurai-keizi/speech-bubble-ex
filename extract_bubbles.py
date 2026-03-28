@@ -89,13 +89,18 @@ def process_image(
         # マスクの bounding box
         x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
 
-        # 縁取り: bbox縦横平均に比例した厚さでマスクを膨張させ差分を黒塗り
+        # 縁取り: 外側に膨張・内側に収縮した差分領域を縁として黒塗り
+        # → エッジの両側に均等に乗る「太いマジック」的な見た目になる
         thickness = max(1, int(((x2 - x1) + (y2 - y1)) / 2 * OUTLINE_RATIO))
         mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
-        dilated_img = mask_img
+        outer_img = mask_img
+        inner_img = mask_img
         for _ in range(thickness):
-            dilated_img = dilated_img.filter(ImageFilter.MaxFilter(3))
-        border_mask = (np.array(dilated_img) > 127) & ~mask
+            outer_img = outer_img.filter(ImageFilter.MaxFilter(3))  # 膨張
+            inner_img = inner_img.filter(ImageFilter.MinFilter(3))  # 収縮
+        outer_mask = np.array(outer_img) > 127
+        inner_mask = np.array(inner_img) > 127
+        border_mask = outer_mask & ~inner_mask
 
         # RGBA 画像を作成（マスク外を透明に、縁取り部分を黒で塗る）
         rgba = np.zeros((h_orig, w_orig, 4), dtype=np.uint8)
