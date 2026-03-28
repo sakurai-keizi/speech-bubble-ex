@@ -28,10 +28,11 @@ from pathlib import Path
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download
-from PIL import Image
+from PIL import Image, ImageFilter
 from ultralytics import YOLO
 
 YOLO_HF_REPO = "huyvux3005/manga109-segmentation-bubble"
+OUTLINE_RATIO = 0.015   # 縁取り厚さ = bbox縦横平均の1.5%
 YOLO_HF_FILE = "best.pt"
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
@@ -85,13 +86,23 @@ def process_image(
         if len(xs) == 0:
             continue
 
-        # RGBA 画像を作成（マスク外を透明に）
+        # マスクの bounding box
+        x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+
+        # 縁取り: bbox縦横平均に比例した厚さでマスクを膨張させ差分を黒塗り
+        thickness = max(1, int(((x2 - x1) + (y2 - y1)) / 2 * OUTLINE_RATIO))
+        mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+        dilated_img = mask_img
+        for _ in range(thickness):
+            dilated_img = dilated_img.filter(ImageFilter.MaxFilter(3))
+        border_mask = (np.array(dilated_img) > 127) & ~mask
+
+        # RGBA 画像を作成（マスク外を透明に、縁取り部分を黒で塗る）
         rgba = np.zeros((h_orig, w_orig, 4), dtype=np.uint8)
         rgba[..., :3] = image_np
         rgba[..., 3] = mask.astype(np.uint8) * 255
-
-        # マスクの bounding box でトリミング
-        x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+        rgba[border_mask, :3] = 0    # 縁取りを黒に
+        rgba[border_mask, 3] = 255   # 縁取りは不透明
         cropped = rgba[y1:y2, x1:x2]
 
         out_path = output_dir / f"{folder_name}_{image_path.stem}_{i+1:03d}.png"
