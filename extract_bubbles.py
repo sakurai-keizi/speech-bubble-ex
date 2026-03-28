@@ -89,25 +89,24 @@ def process_image(
         # マスクの bounding box
         x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
 
-        # 縁取り: 外側に膨張・内側に収縮した差分領域を縁として黒塗り
-        # → エッジの両側に均等に乗る「太いマジック」的な見た目になる
+        # 縁取り: Gaussian ブラーでエッジからの距離を連続値化し滑らかに合成
+        #   b = GaussianBlur(mask)     → エッジ付近で 0〜1 の滑らかな勾配になる
+        #   border_alpha = 4*b*(1-b)   → エッジ上で 1.0、内外に向かって 0 の山型
         thickness = max(1, int(((x2 - x1) + (y2 - y1)) / 2 * OUTLINE_RATIO))
-        mask_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
-        outer_img = mask_img
-        inner_img = mask_img
-        for _ in range(thickness):
-            outer_img = outer_img.filter(ImageFilter.MaxFilter(3))  # 膨張
-            inner_img = inner_img.filter(ImageFilter.MinFilter(3))  # 収縮
-        outer_mask = np.array(outer_img) > 127
-        inner_mask = np.array(inner_img) > 127
-        border_mask = outer_mask & ~inner_mask
+        blur_img = Image.fromarray(mask.astype(np.uint8) * 255, mode="L")
+        blurred = np.array(
+            blur_img.filter(ImageFilter.GaussianBlur(radius=float(thickness)))
+        ).astype(np.float32) / 255.0
+        border_alpha = 4.0 * blurred * (1.0 - blurred)  # (H, W) range [0, 1]
 
-        # RGBA 画像を作成（マスク外を透明に、縁取り部分を黒で塗る）
-        rgba = np.zeros((h_orig, w_orig, 4), dtype=np.uint8)
-        rgba[..., :3] = image_np
-        rgba[..., 3] = mask.astype(np.uint8) * 255
-        rgba[border_mask, :3] = 0    # 縁取りを黒に
-        rgba[border_mask, 3] = 255   # 縁取りは不透明
+        # RGBA を float で組み立てて黒縁をアルファブレンド
+        rgba = np.zeros((h_orig, w_orig, 4), dtype=np.float32)
+        rgba[..., :3] = image_np.astype(np.float32)
+        rgba[..., 3]  = mask.astype(np.float32) * 255.0
+        ba = border_alpha[..., np.newaxis]               # (H, W, 1)
+        rgba[..., :3] = rgba[..., :3] * (1.0 - ba)      # エッジに近いほど黒に近づける
+        rgba[..., 3]  = np.maximum(rgba[..., 3], border_alpha * 255.0)  # 縁を不透明に
+        rgba = rgba.astype(np.uint8)
         cropped = rgba[y1:y2, x1:x2]
 
         out_path = output_dir / f"{folder_name}_{image_path.stem}_{i+1:03d}.png"
